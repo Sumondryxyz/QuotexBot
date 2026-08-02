@@ -1,0 +1,4 @@
+pyquotex
+numpy
+scikit-learn
+requests
