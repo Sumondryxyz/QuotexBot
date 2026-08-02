@@ -17,10 +17,11 @@ MULTI-TIMEFRAME: entry TF for triggers, a higher "structure" TF and a higher
 "trend" TF for directional bias. All three EMA(20) slopes + structure must
 agree with the entry-TF signal direction, or the signal is dropped.
 
-ML CONFLUENCE: HistGradientBoostingClassifier (built into scikit-learn, no
-native build tools needed — this runs fine on Render, unlike lightgbm/xgboost
-on Termux). Retrains periodically on each pair's own recent history. Signal
-only fires if the model agrees with the SMC direction above MODEL_MIN_CONF.
+ML CONFLUENCE: logistic regression written in plain numpy (gradient descent,
+no scikit-learn/xgboost/lightgbm — those need native compilation that fails
+on Termux/ARM, this doesn't). Retrains periodically on each pair's own recent
+history. Signal only fires if the model agrees with the SMC direction above
+MODEL_MIN_CONF.
 
 SELF-LEARNING: every fired signal's next-candle outcome is logged (WIN/LOSS)
 and the running win rate is reported with each new signal and daily via
@@ -41,7 +42,7 @@ ENV VARS:
   MODEL_MIN_CONF=0.55  SCORE_STRONG=90  SCORE_MEDIUM=70
   RETRAIN_EVERY=30  HISTORY_CANDLES=150
 
-pip install pyquotex numpy scikit-learn requests
+pip install pyquotex numpy requests
 """
 import asyncio
 import os
@@ -310,26 +311,37 @@ def build_features(candles):
     return np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
 
+def model_fit(X, y, epochs=300, lr=0.15, l2=1e-3):
+    mean, std = X.mean(0), X.std(0) + 1e-9
+    Z = (X - mean) / std
+    w = np.zeros(Z.shape[1])
+    b = 0.0
+    for _ in range(epochs):
+        p = 1 / (1 + np.exp(-(Z @ w + b)))
+        err = p - y
+        w -= lr * (Z.T @ err / len(y) + l2 * w)
+        b -= lr * err.mean()
+    return w, b, mean, std
+
+
 def train_model(candles):
     if len(candles) < 15:
         return None
-    from sklearn.ensemble import HistGradientBoostingClassifier
     X = build_features(candles)
     c = np.array([x["close"] for x in candles], float)
-    y = (np.roll(c, -1) > c).astype(int)
+    y = (np.roll(c, -1) > c).astype(float)
     keep = np.roll(c, -1) != c
     keep[-1] = False
     if keep.sum() < 12:
         return None
-    clf = HistGradientBoostingClassifier(max_depth=3, max_iter=80, min_samples_leaf=5)
-    clf.fit(X[keep], y[keep])
-    return clf
+    return model_fit(X[keep], y[keep])
 
 
-def model_predict(clf, candles):
-    X = build_features(candles)
-    prob_up = clf.predict_proba(X[-1:])[0][1]
-    return float(prob_up)
+def model_predict(model, candles):
+    w, b, mean, std = model
+    x = build_features(candles)[-1]
+    z = (x - mean) / std
+    return float(1 / (1 + np.exp(-(z @ w + b))))
 
 
 # ---------------------------------------------------------------- HTF trend bias
@@ -655,4 +667,3 @@ def start_keepalive():
 if __name__ == "__main__":
     start_keepalive()
     asyncio.run(main())
-
