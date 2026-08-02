@@ -1,5 +1,4 @@
 git+https://github.com/cleitonleonel/pyquotex.git
 numpy
-scikit-learn
 requests
 httpx==0.27.2
