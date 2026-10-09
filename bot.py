@@ -1,6 +1,6 @@
 """Institutional-style SMC Quotex Signal Bot — multi-timeframe, scored confluence, Telegram + Render.
 
-Refactored to utilize QuotexSignalGenerator core engine.
+Refactored to utilize QuotexSignalGenerator core engine and respond to Telegram commands (/start, /status, /ping).
 """
 
 import asyncio
@@ -10,7 +10,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 import requests
 from pyquotex.stable_api import Quotex
@@ -47,6 +47,10 @@ PAIRS = [
     ).split(",")
 ]
 
+# Global bot health tracking for command handler
+ACTIVE_PAIR_STATES: List[Any] = []
+BOT_START_TIME = time.time()
+
 
 def stamp(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%H:%M:%S")
@@ -69,6 +73,79 @@ def send_telegram(text: str) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         print("telegram error:", exc)
+
+
+async def telegram_command_listener():
+    """Poll Telegram getUpdates API so the bot replies to /start, /status, /ping commands."""
+    if not TG_TOKEN:
+        return
+
+    offset = 0
+    print("Telegram command listener active (/start, /status, /ping)")
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates"
+            resp = await asyncio.to_thread(
+                requests.get, url, params={"offset": offset, "timeout": 10}, timeout=15
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                for update in data.get("result", []):
+                    offset = update["update_id"] + 1
+                    msg = update.get("message", {})
+                    text = msg.get("text", "").strip()
+                    chat_id = str(msg.get("chat", {}).get("id"))
+
+                    if not text or not chat_id:
+                        continue
+
+                    if text.startswith("/start") or text.startswith("/help"):
+                        reply = (
+                            "🤖 <b>Quotex SMC Signal Bot Active!</b>\n\n"
+                            "Available Commands:\n"
+                            "• /status - Check live bot status, active pairs & win rate\n"
+                            "• /ping - Verify bot server responsiveness"
+                        )
+                        await asyncio.to_thread(
+                            requests.post,
+                            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                            data={"chat_id": chat_id, "text": reply, "parse_mode": "HTML"},
+                            timeout=10,
+                        )
+                    elif text.startswith("/ping"):
+                        uptime = int(time.time() - BOT_START_TIME)
+                        reply = f"🏓 <b>Pong!</b> Server active (Uptime: {uptime}s)"
+                        await asyncio.to_thread(
+                            requests.post,
+                            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                            data={"chat_id": chat_id, "text": reply, "parse_mode": "HTML"},
+                            timeout=10,
+                        )
+                    elif text.startswith("/status"):
+                        total_wins = sum(st.wins for st in ACTIVE_PAIR_STATES)
+                        total_losses = sum(st.losses for st in ACTIVE_PAIR_STATES)
+                        total = total_wins + total_losses
+                        wr = f"{total_wins / total * 100:.0f}%" if total else "N/A"
+                        uptime_mins = int((time.time() - BOT_START_TIME) // 60)
+                        pairs_str = ", ".join(st.pair for st in ACTIVE_PAIR_STATES)
+
+                        reply = (
+                            f"📊 <b>Bot Live Status</b>\n\n"
+                            f"• Status: 🟢 Connected & Scanning\n"
+                            f"• Uptime: {uptime_mins} minutes\n"
+                            f"• Active Pairs ({len(ACTIVE_PAIR_STATES)}): {pairs_str}\n"
+                            f"• Session Win Rate: {wr} ({total_wins}W / {total_losses}L)"
+                        )
+                        await asyncio.to_thread(
+                            requests.post,
+                            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                            data={"chat_id": chat_id, "text": reply, "parse_mode": "HTML"},
+                            timeout=10,
+                        )
+        except Exception as e:  # noqa: BLE001
+            pass
+
+        await asyncio.sleep(3)
 
 
 # ------------------------------------------------------- Quotex session fix
@@ -306,8 +383,14 @@ async def run_once() -> None:
         print("no pairs had enough history, aborting this attempt")
         return
 
+    global ACTIVE_PAIR_STATES
+    ACTIVE_PAIR_STATES = states
+
     send_telegram(f"🤖 SMC Pro bot started — watching {len(states)} pairs")
     print(f"\n{len(states)} pairs ready — scanning, Ctrl+C to stop\n")
+
+    # Start command listener background task
+    asyncio.create_task(telegram_command_listener())
 
     cycle = 0
     while True:
