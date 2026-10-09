@@ -1,6 +1,6 @@
 """CLI Interface for Quotex Signal Generator.
 
-Run Quotex signal analysis against live market data, simulated demo candles, or JSON input files.
+Run Quotex signal analysis against live market data, simulated demo candles, or launch Web Dashboard.
 """
 
 import argparse
@@ -25,7 +25,9 @@ def load_candles_from_file(filepath: str) -> List[Dict[str, Any]]:
             raise ValueError("JSON file must contain a list of candles or object with 'candles' key.")
 
 
-async def run_live_scanner(pairs: List[str], min_score: int, min_conf: float) -> None:
+async def run_live_scanner(
+    pairs: List[str], min_score: int, min_conf: float, web_port: Optional[int] = None
+) -> None:
     """Connect to Quotex live API and continuously scan market pairs for signal opportunities."""
     email = os.getenv("QUOTEX_EMAIL")
     password = os.getenv("QUOTEX_PASSWORD")
@@ -41,6 +43,12 @@ async def run_live_scanner(pairs: List[str], min_score: int, min_conf: float) ->
     except ImportError as e:
         print(f"Error importing pyquotex dependencies: {e}")
         sys.exit(1)
+
+    if web_port:
+        from app import run_web_server, add_signal_to_dashboard
+        import threading
+        web_server = run_web_server(web_port)
+        threading.Thread(target=web_server.serve_forever, daemon=True).start()
 
     apply_session_patch(HOST)
     q = Quotex(email=email, password=password, lang="en", host=HOST)
@@ -68,6 +76,9 @@ async def run_live_scanner(pairs: List[str], min_score: int, min_conf: float) ->
 
                 signal: Optional[Signal] = generator.analyze(pair=pair, entry_candles=candles)
                 if signal:
+                    if web_port:
+                        add_signal_to_dashboard(signal)
+
                     print("==========================================")
                     print(" 🔥 LIVE QUOTEX SIGNAL DETECTED 🔥")
                     print("==========================================")
@@ -97,6 +108,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--live", action="store_true", help="Connect to Quotex live market stream for real-time analysis"
+    )
+    parser.add_argument(
+        "--web", action="store_true", help="Launch Web Dashboard server on http://localhost:8080"
+    )
+    parser.add_argument(
+        "--port", type=int, default=8080, help="Port for Web Dashboard server (default: 8080)"
     )
     parser.add_argument(
         "--pairs",
@@ -141,10 +158,18 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if args.web and not args.live:
+        from app import run_web_server, start_demo_signal_stream
+        print(f"Starting Web Dashboard at http://localhost:{args.port}...")
+        server = run_web_server(args.port)
+        asyncio.run(start_demo_signal_stream())
+        return
+
     if args.live:
         pair_list = [p.strip() for p in args.pairs.split(",")]
+        web_port = args.port if args.web else None
         try:
-            asyncio.run(run_live_scanner(pair_list, args.min_score, args.min_conf))
+            asyncio.run(run_live_scanner(pair_list, args.min_score, args.min_conf, web_port=web_port))
         except KeyboardInterrupt:
             print("\nLive scanning stopped by user.")
         return
