@@ -112,6 +112,8 @@ class TestQuotexSignalGenerator(unittest.TestCase):
         self.assertEqual(sig.action, "BUY")
         self.assertIn("BUY", sig.formatted_message)
         self.assertIn("EURUSD_otc", sig.formatted_message)
+        self.assertIn("Entry Time:", sig.formatted_message)
+        self.assertIn("UTC", sig.entry_time_utc)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ confluence scoring and machine learning directional filtering for Quotex/binary 
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 
@@ -26,6 +27,10 @@ class Signal:
         return "BUY" if self.direction == "UP" else "SELL"
 
     @property
+    def entry_time_utc(self) -> str:
+        return datetime.fromtimestamp(self.timestamp, tz=timezone.utc).strftime("%H:%M:%S UTC")
+
+    @property
     def formatted_message(self) -> str:
         arrow = "🟢 BUY" if self.direction == "UP" else "🔴 SELL"
         checklist = "\n".join(f"✔ {r}" for r in self.reasons)
@@ -36,6 +41,9 @@ class Signal:
         )
         return (
             f"<b>{self.pair}</b>  {arrow}\n"
+            f"⏰ Entry Time: {self.entry_time_utc}\n"
+            f"💵 Price: {self.price:.5f}\n"
+            f"⏳ Expiration: {self.expiration_seconds}s (Next Candle)\n"
             f"{conf_str}"
             f"SMC Score: {self.score}/110 ({self.strength})\n\n"
             f"Reasons:\n{checklist}"
@@ -471,7 +479,7 @@ class QuotexSignalGenerator:
     ) -> List[Dict[str, Any]]:
         """Generate realistic synthetic OHLC candles for testing and CLI demonstration."""
         np.random.seed(seed)
-        start_time = 1700000000
+        start_time = int(datetime.now(timezone.utc).timestamp()) - (count * 60)
         price = 1.0850
         candles = []
         drift = 0.00015 if trend == "up" else -0.00015
